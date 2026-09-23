@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Gaze Cursor — Web Demo</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d12;
+    --panel: #151822;
+    --accent: #4fd1c5;
+    --accent-dim: #2c7a72;
+    --text: #e6e9f0;
+    --text-dim: #8b93a7;
+    --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden; overscroll-behavior: none; touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  video { position: fixed; opacity: 0; pointer-events: none; }
+  #preview {
+    position: fixed; bottom: 12px; right: 12px; width: 110px; height: 82px;
+    border-radius: 10px; border: 2px solid var(--accent-dim); object-fit: cover;
+    transform: scaleX(-1); opacity: 0; transition: opacity .2s; z-index: 5;
+  }
+  #preview.on { opacity: 1; }
+  canvas#overlay { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 4; }
+
+  #panel {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+    padding: 14px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(180deg, rgba(11,13,18,.92), rgba(11,13,18,.0));
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  #panel * { pointer-events: auto; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  #status { font-size: 12.5px; color: var(--text-dim); min-height: 16px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    appearance: none; border: none; border-radius: 10px; padding: 10px 14px;
+    font-size: 13.5px; font-weight: 600; background: var(--panel); color: var(--text);
+    border: 1px solid #262b3a;
+  }
+  button.primary { background: var(--accent); color: #05201d; }
+  button:disabled { opacity: .4; }
+  button:active { filter: brightness(0.9); }
+
+  #targets {
+    position: fixed; inset: 0; display: grid; grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr); gap: 10px; padding: 90px 14px 110px;
+    z-index: 3;
+  }
+  .target {
+    border-radius: 16px; background: var(--panel); border: 1px solid #262b3a;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px; position: relative; overflow: hidden;
+  }
+  .target .label { font-size: 13px; color: var(--text-dim); }
+  .target .count { font-size: 22px; font-weight: 700; }
+  .target .dwell-ring {
+    position: absolute; inset: 0; border-radius: 16px;
+    background: conic-gradient(var(--accent) calc(var(--p, 0) * 1%), transparent 0);
+    opacity: .35; transition: opacity .15s;
+  }
+  .target.hot { border-color: var(--accent); }
+  .target.fired { animation: flash .35s ease; }
+  @keyframes flash { 0% { background: var(--accent); } 100% { background: var(--panel); } }
+
+  #cursor {
+    position: fixed; width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid var(--accent); box-shadow: 0 0 12px rgba(79,209,197,.7);
+    transform: translate(-50%, -50%); pointer-events: none; z-index: 20;
+    transition: opacity .15s; opacity: 0;
+  }
+  #cursor.visible { opacity: 1; }
+  #cursor::after {
+    content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--accent);
+  }
+
+  #calibration {
+    position: fixed; inset: 0; background: #05060a; z-index: 30;
+    display: none; align-items: center; justify-content: center;
+  }
+  #calibration.active { display: flex; }
+  #calib-hint {
+    position: absolute; top: 14px; left: 0; right: 0; text-align: center;
+    font-size: 13.5px; color: var(--text-dim); padding: 0 20px;
+  }
+  .dot {
+    position: absolute; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--danger); border: 3px solid #fff; transform: translate(-50%, -50%);
+    box-shadow: 0 0 18px rgba(255,107,107,.7);
+  }
+  .dot.done { background: var(--accent); box-shadow: 0 0 18px rgba(79,209,197,.7); }
+
+  #gate {
+    position: fixed; inset: 0; z-index: 50; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    text-align: center;
+  }
+  #gate.hidden { display: none; }
+  #gate .card { max-width: 360px; display: flex; flex-direction: column; gap: 14px; }
+  #gate p { color: var(--text-dim); font-size: 14px; line-height: 1.5; margin: 0; }
+  #gate .error { color: var(--danger); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="card">
+    <h1 style="font-size:20px">👁 Gaze Cursor — Web Demo</h1>
+    <p>
+      Runs entirely in this browser tab — your camera never leaves the phone.
+      It moves a cursor <strong>on this page</strong>, not your phone's real
+      system cursor (browsers can't do that). Needs front-camera access and a
+      few seconds to calibrate.
+    </p>
+    <button class="primary" id="start-btn">Enable camera &amp; start</button>
+    <div class="error" id="gate-error"></div>
+  </div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+<video id="preview" autoplay playsinline muted></video>
+
+<div id="stage">
+  <canvas id="overlay"></canvas>
+  <div id="targets"></div>
+</div>
+
+<div id="cursor"></div>
+
+<div id="panel">
+  <h1>Gaze Cursor — Web Demo</h1>
+  <div id="status">Loading face tracker…</div>
+  <div class="row">
+    <button id="calibrate-btn" disabled>Calibrate (9 points)</button>
+    <button id="preview-btn" disabled>Show camera</button>
+    <button id="blink-btn" disabled>Blink-click: on</button>
+  </div>
+</div>
+
+<div id="calibration">
+  <div id="calib-hint">Look at the dot, then tap it</div>
+</div>
+
+<script type="module">
+import {
+  FaceLandmarker,
+  FilesetResolver,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// Same iris/eye landmark indices used by the desktop app's tracker.py,
+// so both trackers agree on what "iris center" and "EAR" mean.
+const LEFT_IRIS = [474, 475, 476, 477];
+const RIGHT_IRIS = [469, 470, 471, 472];
+const LEFT_EYE_EAR = [362, 385, 387, 263, 373, 380];
+const RIGHT_EYE_EAR = [33, 160, 158, 133, 153, 144];
+
+const EAR_BLINK_THRESHOLD = 0.21;
+const EAR_CONSEC_FRAMES = 2;
+const BLINK_COOLDOWN_MS = 700;
+const SMOOTHING_WINDOW = 6;
+const DWELL_MS = 1300;
+const CALIBRATION_STORAGE_KEY = "gazeCursorCalibrationV1";
+
+const $ = (sel) => document.querySelector(sel);
+const video = $("#video");
+const preview = $("#preview");
+const overlay = $("#overlay");
+const ctx = overlay.getContext("2d");
+const cursorEl = $("#cursor");
+const statusEl = $("#status");
+const gate = $("#gate");
+const gateError = $("#gate-error");
+const startBtn = $("#start-btn");
+const calibrateBtn = $("#calibrate-btn");
+const previewBtn = $("#preview-btn");
+const blinkBtn = $("#blink-btn");
+const calibrationEl = $("#calibration");
+const calibHint = $("#calib-hint");
+const targetsEl = $("#targets");
+
+let faceLandmarker = null;
+let running = false;
+let blinkClickEnabled = true;
+let blinkFrameCount = 0;
+let lastBlinkTime = 0;
+let calibration = loadCalibration();
+
+function setStatus(msg) {
+  statusEl.textContent = msg;
+}
+
+function resizeCanvas() {
+  overlay.width = window.innerWidth * devicePixelRatio;
+  overlay.height = window.innerHeight * devicePixelRatio;
+  overlay.style.width = window.innerWidth + "px";
+  overlay.style.height = window.innerHeight + "px";
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+// ---------- Smoothing ----------
+class MovingAverage {
+  constructor(n) { this.n = n; this.buf = []; }
+  update(pt) {
+    this.buf.push(pt);
+    if (this.buf.length > this.n) this.buf.shift();
+    const sx = this.buf.reduce((a, p) => a + p[0], 0) / this.buf.length;
+    const sy = this.buf.reduce((a, p) => a + p[1], 0) / this.buf.length;
+    return [sx, sy];
+  }
+}
+const smoother = new MovingAverage(SMOOTHING_WINDOW);
+
+// ---------- Eye math ----------
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+function irisCenter(landmarks, idxs) {
+  let x = 0, y = 0;
+  for (const i of idxs) { x += landmarks[i].x; y += landmarks[i].y; }
+  return [x / idxs.length, y / idxs.length];
+}
+
+function earFor(landmarks, idxs) {
+  const [p1, p2, p3, p4, p5, p6] = idxs.map((i) => landmarks[i]);
+  const vertical = dist(p2, p6) + dist(p3, p5);
+  const horizontal = dist(p1, p4);
+  return horizontal === 0 ? 0 : vertical / (2 * horizontal);
+}
+
+// ---------- Quadratic least-squares fit (iris -> screen) ----------
+function features(x, y) { return [1, x, y, x * x, y * y, x * y]; }
+
+function solveSquare(Ain, bin) {
+  const n = Ain.length;
+  const M = Ain.map((row, i) => [...row, bin[i]]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+    }
+    [M[col], M[pivot]] = [M[pivot], M[col]];
+    if (Math.abs(M[col][col]) < 1e-9) continue;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col] / M[col][col];
+      for (let c = col; c <= n; c++) M[r][c] -= f * M[col][c];
+    }
+  }
+  return M.map((row, i) => (Math.abs(row[i]) < 1e-9 ? 0 : row[n] / row[i]));
+}
+
+function fitMapping(samples) {
+  const n = 6;
+  const AtA = Array.from({ length: n }, () => new Array(n).fill(0));
+  const AtBx = new Array(n).fill(0);
+  const AtBy = new Array(n).fill(0);
+  for (const s of samples) {
+    const f = features(s.iris[0], s.iris[1]);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) AtA[i][j] += f[i] * f[j];
+      AtBx[i] += f[i] * s.screen[0];
+      AtBy[i] += f[i] * s.screen[1];
+    }
+  }
+  const coeffsX = solveSquare(AtA.map((r) => [...r]), [...AtBx]);
+  const coeffsY = solveSquare(AtA.map((r) => [...r]), [...AtBy]);
+  return { coeffsX, coeffsY };
+}
+
+function applyMapping(iris) {
+  const f = features(iris[0], iris[1]);
+  const dot = (c) => f.reduce((sum, v, i) => sum + v * c[i], 0);
+  let sx = dot(calibration.coeffsX);
+  let sy = dot(calibration.coeffsY);
+  sx = Math.min(Math.max(sx, 0), window.innerWidth - 1);
+  sy = Math.min(Math.max(sy, 0), window.innerHeight - 1);
+  return [sx, sy];
+}
+
+function loadCalibration() {
+  try {
+    const raw = localStorage.getItem(CALIBRATION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveCalibration(data) {
+  calibration = data;
+  try { localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+
+// ---------- Dwell-click demo targets ----------
+const TARGET_LABELS = ["Up-left", "Up", "Up-right", "Down-left", "Down", "Down-right"];
+const targetState = TARGET_LABELS.map((label) => ({
+  label, count: 0, el: null, ring: null, countEl: null,
+  dwellStart: null, insideNow: false,
+}));
+
+function buildTargets() {
+  targetsEl.innerHTML = "";
+  targetState.forEach((t) => {
+    const el = document.createElement("div");
+    el.className = "target";
+    el.innerHTML = `
+      <div class="dwell-ring"></div>
+      <div class="label">${t.label}</div>
+      <div class="count">0</div>
+    `;
+    targetsEl.appendChild(el);
+    t.el = el;
+    t.ring = el.querySelector(".dwell-ring");
+    t.countEl = el.querySelector(".count");
+  });
+}
+buildTargets();
+
+function updateDwell(px, py) {
+  const now = performance.now();
+  for (const t of targetState) {
+    const r = t.el.getBoundingClientRect();
+    const inside = px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
+    t.el.classList.toggle("hot", inside);
+    if (inside) {
+      if (t.dwellStart == null) t.dwellStart = now;
+      const pct = Math.min(100, ((now - t.dwellStart) / DWELL_MS) * 100);
+      t.ring.style.setProperty("--p", pct.toFixed(1));
+      t.ring.style.opacity = 0.35 + (pct / 100) * 0.5;
+      if (pct >= 100) {
+        fireTarget(t);
+        t.dwellStart = now; // restart so holding gaze keeps triggering at a cadence
+      }
+    } else {
+      t.dwellStart = null;
+      t.ring.style.setProperty("--p", 0);
+      t.ring.style.opacity = 0.35;
+    }
+  }
+}
+
+function fireTarget(t) {
+  t.count += 1;
+  t.countEl.textContent = String(t.count);
+  t.el.classList.remove("fired");
+  void t.el.offsetWidth;
+  t.el.classList.add("fired");
+}
+
+function blinkClick(px, py) {
+  const el = document.elementFromPoint(px, py);
+  const target = el && el.closest(".target");
+  if (target) {
+    const t = targetState.find((x) => x.el === target);
+    if (t) fireTarget(t);
+  }
+}
+
+// ---------- Camera + model setup ----------
+async function setupCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+    audio: false,
+  });
+  video.srcObject = stream;
+  preview.srcObject = stream;
+  await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+  await video.play();
+}
+
+async function setupModel() {
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+  const modelAssetPath =
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+  const common = {
+    baseOptions: { modelAssetPath },
+    runningMode: "VIDEO",
+    numFaces: 1,
+    outputFaceBlendshapes: false,
+    outputFacialTransformationMatrixes: false,
+  };
+  try {
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      ...common,
+      baseOptions: { ...common.baseOptions, delegate: "GPU" },
+    });
+  } catch (e) {
+    faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      ...common,
+      baseOptions: { ...common.baseOptions, delegate: "CPU" },
+    });
+  }
+}
+
+// ---------- Main loop ----------
+let lastFaceSeenAt = 0;
+let currentIrisNorm = null; // normalized [0,1] iris center, mirrored to feel natural
+
+function drawFaceLost() {
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+}
+
+function loop() {
+  if (!running) return;
+  const now = performance.now();
+  const result = faceLandmarker.detectForVideo(video, now);
+
+  if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+    lastFaceSeenAt = now;
+    const lm = result.faceLandmarks[0];
+    const left = irisCenter(lm, LEFT_IRIS);
+    const right = irisCenter(lm, RIGHT_IRIS);
+    let ix = (left[0] + right[0]) / 2;
+    let iy = (left[1] + right[1]) / 2;
+    ix = 1 - ix; // mirror to match the mirrored preview / natural "look left -> cursor left"
+    currentIrisNorm = [ix, iy];
+
+    const ear = (earFor(lm, LEFT_EYE_EAR) + earFor(lm, RIGHT_EYE_EAR)) / 2;
+    if (blinkClickEnabled) {
+      if (ear < EAR_BLINK_THRESHOLD) {
+        blinkFrameCount++;
+      } else {
+        if (blinkFrameCount >= EAR_CONSEC_FRAMES && now - lastBlinkTime > BLINK_COOLDOWN_MS) {
+          lastBlinkTime = now;
+          if (cursorEl.classList.contains("visible")) {
+            const rect = cursorEl.getBoundingClientRect();
+            blinkClick(rect.left + rect.width / 2, rect.top + rect.height / 2);
+          }
+        }
+        blinkFrameCount = 0;
+      }
+    }
+
+    if (calibration) {
+      const smooth = smoother.update(currentIrisNorm);
+      const [sx, sy] = applyMapping(smooth);
+      cursorEl.style.left = sx + "px";
+      cursorEl.style.top = sy + "px";
+      cursorEl.classList.add("visible");
+      updateDwell(sx, sy);
+      setStatus("Tracking — look around the page.");
+    } else {
+      setStatus("Face found. Tap “Calibrate” to link your gaze to the screen.");
+    }
+  } else {
+    cursorEl.classList.remove("visible");
+    if (now - lastFaceSeenAt > 2000) {
+      setStatus("No face detected — check lighting and hold the phone up so your face is centered.");
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ---------- Calibration flow ----------
+function gridPoints() {
+  const margin = 0.1;
+  const xs = [margin, 0.5, 1 - margin].map((f) => f * window.innerWidth);
+  const ys = [margin, 0.5, 1 - margin].map((f) => f * window.innerHeight);
+  const pts = [];
+  for (const y of ys) for (const x of xs) pts.push([x, y]);
+  return pts;
+}
+
+function runCalibration() {
+  return new Promise((resolve) => {
+    const points = gridPoints();
+    const samples = [];
+    let index = 0;
+
+    calibrationEl.classList.add("active");
+    calibHint.textContent = "Look at the dot, then tap it";
+    const dot = document.createElement("div");
+    dot.className = "dot";
+    calibrationEl.appendChild(dot);
+
+    function placeDot() {
+      const [x, y] = points[index];
+      dot.style.left = x + "px";
+      dot.style.top = y + "px";
+      dot.classList.remove("done");
+    }
+    placeDot();
+
+    function onTap() {
+      if (!currentIrisNorm) return;
+      samples.push({ iris: currentIrisNorm.slice(), screen: points[index] });
+      dot.classList.add("done");
+      index += 1;
+      if (index >= points.length) {
+        calibrationEl.removeEventListener("pointerdown", onTap);
+        dot.remove();
+        calibrationEl.classList.remove("active");
+        resolve(samples);
+      } else {
+        setTimeout(placeDot, 120);
+      }
+    }
+    calibrationEl.addEventListener("pointerdown", onTap);
+  });
+}
+
+calibrateBtn.addEventListener("click", async () => {
+  calibrateBtn.disabled = true;
+  const samples = await runCalibration();
+  if (samples.length >= 6) {
+    const { coeffsX, coeffsY } = fitMapping(samples);
+    saveCalibration({ coeffsX, coeffsY, ts: Date.now() });
+    setStatus("Calibration saved. Tracking your gaze now.");
+  } else {
+    setStatus("Calibration cancelled — not enough points.");
+  }
+  calibrateBtn.disabled = false;
+});
+
+previewBtn.addEventListener("click", () => {
+  const on = preview.classList.toggle("on");
+  previewBtn.textContent = on ? "Hide camera" : "Show camera";
+});
+
+blinkBtn.addEventListener("click", () => {
+  blinkClickEnabled = !blinkClickEnabled;
+  blinkBtn.textContent = `Blink-click: ${blinkClickEnabled ? "on" : "off"}`;
+});
+
+// ---------- Boot ----------
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true;
+  gateError.textContent = "";
+  try {
+    if (!window.isSecureContext) {
+      throw new Error("This page needs HTTPS (or localhost) for camera access.");
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("This browser doesn't support camera access.");
+    }
+    setStatus("Requesting camera…");
+    await setupCamera();
+    setStatus("Loading face-tracking model…");
+    await setupModel();
+    gate.classList.add("hidden");
+    calibrateBtn.disabled = false;
+    previewBtn.disabled = false;
+    blinkBtn.disabled = false;
+    running = true;
+    requestAnimationFrame(loop);
+    if (calibration) {
+      setStatus("Using your saved calibration. Tap “Calibrate” to redo it.");
+    } else {
+      setStatus("Tap “Calibrate” to link your gaze to the screen.");
+    }
+  } catch (err) {
+    gateError.textContent = err.message || String(err);
+    startBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
